@@ -11,7 +11,6 @@ import barrioFunde.demo.infrastructure.adapters.in.web.dto.RankingDonanteDTO;
 import barrioFunde.demo.infrastructure.adapters.in.web.mapper.DonacionDTOMapper;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -32,44 +31,47 @@ import java.util.stream.IntStream;
 @RequiredArgsConstructor
 public class DonacionController {
 
-    //@Autowired
-    //private SecurityContextHolder securityContextHolder;
-
     private final CrearDonacionUseCase crearDonacionUseCase;
     private final ConsultarDonacionUseCase consultarDonacionUseCase;
     private final ActualizarDonacionUseCase actualizarDonacionUseCase;
     private final ObtenerRankingDonantesUseCase rankingDonantesUseCase;
-    private final ConsultarUsuarioUseCase consultarUsuarioUseCase; // Para obtener info del usuario
-
-
+    private final ConsultarUsuarioUseCase consultarUsuarioUseCase;
 
     /**
-     * Obtiene el email del usuario autenticado desde el token JWT
-     */
-    private String getAuthenticatedUserEmail() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication(); //  Uso correcto
-        return authentication.getName(); // Retorna el email del usuario
-    }
-
-    /**
-     * Obtiene el usuario completo desde la base de datos
+     * Obtiene el objeto Usuario directamente desde el SecurityContext.
+     *
+     * El JwtAuthenticationFilter establece el principal como un objeto Usuario:
+     *   new UsernamePasswordAuthenticationToken(usuario, null, authorities)
+     *
+     * Por eso casteamos el principal a Usuario en lugar de llamar
+     * authentication.getName() que devolvería usuario.toString() y no el email.
      */
     private Usuario getAuthenticatedUser() {
-        String email = getAuthenticatedUserEmail();
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        Object principal = authentication.getPrincipal();
+
+        if (principal instanceof Usuario usuario) {
+            // ✅ El filtro JWT guardó el objeto Usuario completo como principal
+            return usuario;
+        }
+
+        // Fallback: si por alguna razón el principal es un String (email),
+        // buscamos en la BD igual que antes
+        String email = authentication.getName();
         return consultarUsuarioUseCase.buscarPorEmail(email)
-                .orElseThrow(() -> new IllegalArgumentException("Usuario no encontrado"));
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Usuario autenticado no encontrado: " + email));
     }
 
-
+    // ── CREATE ────────────────────────────────────────────────────────────────
 
     @PostMapping
     public ResponseEntity<DonacionResponseDTO> crear(@Valid @RequestBody DonacionRequestDTO dto) {
-        // Obtener usuario autenticado
         Usuario usuarioAutenticado = getAuthenticatedUser();
 
-        // Crear donación con el ID del usuario autenticado
         Donacion donacion = DonacionDTOMapper.toDomain(dto);
-        donacion.setUsuarioId(usuarioAutenticado.getId()); // Asignar el ID del usuario autenticado
+        donacion.setUsuarioId(usuarioAutenticado.getId());
 
         Donacion creada = crearDonacionUseCase.crear(donacion);
 
@@ -82,8 +84,7 @@ public class DonacionController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-
-    // ========== CONSULTAR ==========
+    // ── READ ──────────────────────────────────────────────────────────────────
 
     @GetMapping("/{id}")
     public ResponseEntity<DonacionResponseDTO> buscarPorId(@PathVariable Long id) {
@@ -121,9 +122,9 @@ public class DonacionController {
         return ResponseEntity.ok(response);
     }
 
-
     /**
-     *  NUEVO: Obtener MIS donaciones (del usuario autenticado)
+     * Mis donaciones — usa el usuario del SecurityContext directamente,
+     * sin necesidad de pasar el ID por la URL.
      */
     @GetMapping("/mis-donaciones")
     public ResponseEntity<List<DonacionResponseDTO>> listarMisDonaciones() {
@@ -142,7 +143,6 @@ public class DonacionController {
         return ResponseEntity.ok(response);
     }
 
-
     @GetMapping("/usuario/{usuarioId}")
     public ResponseEntity<List<DonacionResponseDTO>> buscarPorUsuario(@PathVariable Long usuarioId) {
         List<Donacion> donaciones = consultarDonacionUseCase.buscarPorUsuario(usuarioId);
@@ -160,7 +160,6 @@ public class DonacionController {
 
         return ResponseEntity.ok(response);
     }
-
 
     @GetMapping("/estado/{estado}")
     public ResponseEntity<List<DonacionResponseDTO>> buscarPorEstado(@PathVariable EstadoDonacion estado) {
@@ -181,7 +180,6 @@ public class DonacionController {
 
         return ResponseEntity.ok(response);
     }
-
 
     @GetMapping("/tipo/{tipo}")
     public ResponseEntity<List<DonacionResponseDTO>> buscarPorTipo(@PathVariable TipoDonacion tipo) {
@@ -232,24 +230,20 @@ public class DonacionController {
         return ResponseEntity.ok(Map.of("totalDonado", total));
     }
 
-    // ========== ACTUALIZAR (ADMIN) ==========
+    // ── ADMIN ─────────────────────────────────────────────────────────────────
 
     @PatchMapping("/{id}/confirmar")
-    @PreAuthorize("hasRole('ADMINISTRADOR')")  // ← Agregar esto
+    @PreAuthorize("hasRole('ADMINISTRADOR')")
     public ResponseEntity<Void> confirmar(
             @PathVariable Long id,
             @RequestParam(required = false) String notas
     ) {
-        // Validar que el usuario autenticado sea admin
-        String username = SecurityContextHolder.getContext()
-                .getAuthentication().getName();
-
-        // Opcional: Registrar quién confirmó
         actualizarDonacionUseCase.confirmar(id, notas);
         return ResponseEntity.ok().build();
     }
 
     @PatchMapping("/{id}/rechazar")
+    @PreAuthorize("hasRole('ADMINISTRADOR')")
     public ResponseEntity<Void> rechazar(
             @PathVariable Long id,
             @RequestParam String motivo
@@ -258,7 +252,7 @@ public class DonacionController {
         return ResponseEntity.ok().build();
     }
 
-    // ========== RANKING ==========
+    // ── RANKING ───────────────────────────────────────────────────────────────
 
     @GetMapping("/ranking/top")
     public ResponseEntity<List<RankingDonanteDTO>> obtenerTopDonantes(

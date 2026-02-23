@@ -20,7 +20,7 @@ import java.time.LocalDateTime;
 public class Usuario {
 
     private Long id;
-    private String nombre;
+    private String nombre;//
     private String email;
     private String password;
 
@@ -144,6 +144,6 @@ public class Usuario {
     }
 
     public boolean isActivo() {
-        return false;
+        return Boolean.TRUE.equals(activo);
     }
 }
